@@ -1,0 +1,292 @@
+# name: test/sql/xpath_comprehensive.test
+# description: comprehensive tests for all xpath functions
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# ============================================================================
+# HAPPY PATH: Basic functionality across all functions
+# ============================================================================
+
+# --- xpath_text ---
+
+# Simple element
+query I
+SELECT xpath_text('<r><a>hello</a></r>', '//a');
+----
+hello
+
+# Nested elements — first match
+query I
+SELECT xpath_text('<r><a>first</a><b><a>nested</a></b></r>', '//a');
+----
+first
+
+# Self-closing element — no text
+query I
+SELECT xpath_text('<r><a/></r>', '//a');
+----
+(empty)
+
+# Text with whitespace preserved
+query I
+SELECT length(xpath_text('<r><a>  spaces  </a></r>', '//a'));
+----
+10
+
+# --- xpath_count ---
+
+query I
+SELECT xpath_count('<r><a/><a/><a/><b/><a/></r>', '//a');
+----
+4
+
+# --- xpath_exists ---
+
+query I
+SELECT xpath_exists('<r><deep><nested><a/></nested></deep></r>', '//a');
+----
+true
+
+# --- xpath_list ---
+
+query I
+SELECT xpath_list('<r><a>x</a><a>y</a><a>z</a></r>', '//a');
+----
+["x","y","z"]
+
+# --- xpath_eval ---
+
+query I
+SELECT xpath_eval('<r><a/><a/></r>', 'count(//a)');
+----
+2
+
+# ============================================================================
+# FEATURE COMBINATIONS
+# ============================================================================
+
+# xpath_text with attribute predicate
+query I
+SELECT xpath_text('<r><item lang="en">English</item><item lang="fr">French</item></r>', '//item[@lang="en"]');
+----
+English
+
+# xpath_count with attribute predicate
+query I
+SELECT xpath_count('<r><item type="A"/><item type="B"/><item type="A"/></r>', '//item[@type="A"]');
+----
+2
+
+# xpath_exists with contains predicate
+query I
+SELECT xpath_exists('<r><title>Machine Learning Basics</title></r>', '//title[contains(.,"Learning")]');
+----
+true
+
+# Multiple functions on same row
+statement ok
+CREATE TABLE combo_test AS SELECT '<p><title>Test</title><claim>A</claim><claim>B</claim></p>' AS xml;
+
+query III
+SELECT
+  xpath_text(xml, '//title') AS title,
+  xpath_count(xml, '//claim') AS claims,
+  xpath_exists(xml, '//claim') AS has_claims
+FROM combo_test;
+----
+Test	2	true
+
+statement ok
+DROP TABLE combo_test;
+
+# Use in WHERE, GROUP BY, ORDER BY
+statement ok
+CREATE TABLE multi_patent AS SELECT * FROM (VALUES
+  ('<p><type>utility</type><claim>1</claim><claim>2</claim></p>'),
+  ('<p><type>design</type><claim>1</claim></p>'),
+  ('<p><type>utility</type><claim>1</claim><claim>2</claim><claim>3</claim></p>'),
+  ('<p><type>plant</type></p>')
+) AS t(xml);
+
+# Filter + count
+query II
+SELECT xpath_text(xml, '//type') AS ptype, xpath_count(xml, '//claim') AS claims
+FROM multi_patent
+WHERE xpath_exists(xml, '//claim')
+ORDER BY claims DESC;
+----
+utility	3
+utility	2
+design	1
+
+# Aggregate over xpath results
+query I
+SELECT SUM(xpath_count(xml, '//claim')) FROM multi_patent;
+----
+6
+
+statement ok
+DROP TABLE multi_patent;
+
+# ============================================================================
+# NAMESPACE HANDLING
+# ============================================================================
+
+# Namespace-prefixed elements
+query I
+SELECT xpath_text('<r xmlns:ns="http://example.com"><ns:title>Hello</ns:title></r>', '//ns:title');
+----
+Hello
+
+query I
+SELECT xpath_count('<r xmlns:a="urn:a"><a:x/><a:x/><b/></r>', '//a:x');
+----
+2
+
+# ============================================================================
+# EDGE CASES
+# ============================================================================
+
+# Empty XML
+query I
+SELECT xpath_text('<r/>', '//a');
+----
+(empty)
+
+# No match
+query I
+SELECT xpath_count('<r><b/></r>', '//a');
+----
+0
+
+query I
+SELECT xpath_exists('<r><b/></r>', '//a');
+----
+false
+
+query I
+SELECT xpath_list('<r><b/></r>', '//a');
+----
+[]
+
+# Deeply nested
+query I
+SELECT xpath_text('<a><b><c><d><e><f>deep</f></e></d></c></b></a>', '//f');
+----
+deep
+
+# Many siblings
+query I
+SELECT xpath_count('<r><a/><a/><a/><a/><a/><a/><a/><a/><a/><a/></r>', '//a');
+----
+10
+
+# Mixed content (text + child elements) — returns first direct text node
+query I
+SELECT xpath_text('<p>Hello <b>world</b> today</p>', '//p') LIKE 'Hello%';
+----
+true
+
+# Special characters in text (entities preserved — use xpath_eval + string() for decoded)
+query I
+SELECT xpath_text('<r><a>hello &amp; world</a></r>', '//a') LIKE '%&amp;%';
+----
+true
+
+# CDATA
+query I
+SELECT xpath_text('<r><a><![CDATA[raw <content>]]></a></r>', '//a');
+----
+raw <content>
+
+# Comments are ignored
+query I
+SELECT xpath_count('<r><!-- comment --><a/></r>', '//a');
+----
+1
+
+# ============================================================================
+# SAD PATH: Error handling
+# ============================================================================
+
+# Invalid XPath expression
+statement error
+SELECT xpath_text('<r/>', '///invalid[');
+----
+Invalid Input Error
+
+# Malformed XML (unclosed tag) — best-effort parsing, no crash
+query I
+SELECT xpath_count('<r><a>unclosed', '//a');
+----
+1
+
+# NULL inputs
+query I
+SELECT xpath_text(NULL, '//a');
+----
+NULL
+
+query I
+SELECT xpath_text('<r/>', NULL);
+----
+NULL
+
+# ============================================================================
+# TABLE COLUMN OPERATIONS
+# ============================================================================
+
+statement ok
+CREATE TABLE xml_docs AS SELECT * FROM (VALUES
+  (1, '<patent><title>Solar Panel</title><year>2020</year><claim>A panel</claim><claim>The panel</claim></patent>'),
+  (2, '<patent><title>Wind Turbine</title><year>2021</year><claim>A turbine</claim></patent>'),
+  (3, '<patent><title>Battery Pack</title><year>2020</year></patent>'),
+  (4, '<patent><title>Heat Pump</title><year>2022</year><claim>A pump</claim><claim>The pump</claim><claim>A system</claim></patent>')
+) AS t(id, xml);
+
+# Extract across all rows
+query II
+SELECT id, xpath_text(xml, '//title') AS title FROM xml_docs ORDER BY id;
+----
+1	Solar Panel
+2	Wind Turbine
+3	Battery Pack
+4	Heat Pump
+
+# Filter with xpath_exists
+query II
+SELECT id, xpath_text(xml, '//title') FROM xml_docs WHERE xpath_exists(xml, '//claim') ORDER BY id;
+----
+1	Solar Panel
+2	Wind Turbine
+4	Heat Pump
+
+# Count + filter
+query II
+SELECT xpath_text(xml, '//title') AS title, xpath_count(xml, '//claim') AS claims
+FROM xml_docs
+WHERE xpath_count(xml, '//claim') >= 2
+ORDER BY claims DESC;
+----
+Heat Pump	3
+Solar Panel	2
+
+# Aggregate
+query I
+SELECT SUM(xpath_count(xml, '//claim')) AS total_claims FROM xml_docs;
+----
+6
+
+# Join on xpath results
+query II
+SELECT a.id, b.id
+FROM xml_docs a, xml_docs b
+WHERE xpath_text(a.xml, '//year') = xpath_text(b.xml, '//year')
+  AND a.id < b.id
+ORDER BY a.id;
+----
+1	3
+
+statement ok
+DROP TABLE xml_docs;
