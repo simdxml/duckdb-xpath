@@ -1,0 +1,23 @@
+[package]
+name = "duckdb_xpath"
+version = "0.1.0"
+edition = "2021"
+description = "SIMD-accelerated XPath for DuckDB, powered by simdxml"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/simdxml/duckdb-xpath"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+strip = true
+
+[[example]]
+name = "duckdb_xpath"
+path = "src/wasm_lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+duckdb = { version = "=1.10501.0", features = ["loadable-extension", "vscalar"] }
+simdxml = "0.1"
