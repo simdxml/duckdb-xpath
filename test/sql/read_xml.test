@@ -1,0 +1,29 @@
+# name: test/sql/read_xml.test
+# description: test read_xml table function
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Write a test file
+statement ok
+COPY (SELECT '<patents><patent><title>Widget</title><claim>A widget</claim><claim>The widget</claim></patent><patent><title>Gadget</title><claim>A gadget</claim></patent></patents>' AS content) TO '__TEST_DIR__/test.xml' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Read titles
+query I
+SELECT * FROM read_xml('__TEST_DIR__/test.xml', '//title') ORDER BY 1;
+----
+Gadget
+Widget
+
+# Read claims
+query I
+SELECT count(*) FROM read_xml('__TEST_DIR__/test.xml', '//claim');
+----
+3
+
+# Read with predicate
+query I
+SELECT * FROM read_xml('__TEST_DIR__/test.xml', '//patent/title');
+----
+Widget
+Gadget

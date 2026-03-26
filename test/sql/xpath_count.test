@@ -1,0 +1,38 @@
+# name: test/sql/xpath_count.test
+# description: test xpath_count scalar function
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Count elements
+query I
+SELECT xpath_count('<r><a/><a/><b/></r>', '//a');
+----
+2
+
+# Count zero
+query I
+SELECT xpath_count('<r><b/></r>', '//a');
+----
+0
+
+# Count with predicate
+query I
+SELECT xpath_count('<r><item type="x"/><item type="y"/><item type="x"/></r>', '//item[@type="x"]');
+----
+2
+
+# Works on table columns
+statement ok
+CREATE TABLE patents AS SELECT * FROM (VALUES
+  ('<p><claim>1</claim><claim>2</claim></p>'),
+  ('<p><claim>1</claim></p>'),
+  ('<p></p>')
+) AS t(xml);
+
+query I
+SELECT xpath_count(xml, '//claim') FROM patents;
+----
+2
+1
+0

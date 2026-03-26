@@ -1,0 +1,42 @@
+# name: test/sql/xpath_exists.test
+# description: test xpath_exists scalar function
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Exists true
+query I
+SELECT xpath_exists('<r><a/></r>', '//a');
+----
+true
+
+# Exists false
+query I
+SELECT xpath_exists('<r><b/></r>', '//a');
+----
+false
+
+# With attribute predicate
+query I
+SELECT xpath_exists('<r><item type="x"/></r>', '//item[@type="x"]');
+----
+true
+
+query I
+SELECT xpath_exists('<r><item type="y"/></r>', '//item[@type="x"]');
+----
+false
+
+# Use in WHERE clause
+statement ok
+CREATE TABLE docs AS SELECT * FROM (VALUES
+  ('<p><claim>yes</claim></p>'),
+  ('<p><other>no</other></p>'),
+  ('<p><claim>also yes</claim></p>')
+) AS t(xml);
+
+query I
+SELECT xpath_text(xml, '//claim') FROM docs WHERE xpath_exists(xml, '//claim') ORDER BY 1;
+----
+also yes
+yes

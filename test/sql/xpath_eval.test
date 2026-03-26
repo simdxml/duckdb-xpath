@@ -1,0 +1,40 @@
+# name: test/sql/xpath_eval.test
+# description: test xpath_eval scalar function (scalar XPath expressions)
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# count() scalar
+query I
+SELECT xpath_eval('<r><a/><a/><a/></r>', 'count(//a)');
+----
+3
+
+# string() scalar
+query I
+SELECT xpath_eval('<r><title>Hello World</title></r>', 'string(//title)');
+----
+Hello World
+
+# boolean() scalar
+query I
+SELECT xpath_eval('<r><a/></r>', 'boolean(//a)');
+----
+true
+
+query I
+SELECT xpath_eval('<r><b/></r>', 'boolean(//a)');
+----
+false
+
+# contains() scalar
+query I
+SELECT xpath_eval('<r><t>hello world</t></r>', 'contains(string(//t), "world")');
+----
+true
+
+# String length
+query I
+SELECT xpath_eval('<r><t>hello</t></r>', 'string-length(string(//t))');
+----
+5

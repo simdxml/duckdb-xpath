@@ -1,0 +1,48 @@
+# name: test/sql/xpath_text.test
+# description: test xpath_text scalar function
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Simple element text extraction
+query I
+SELECT xpath_text('<book><title>Rust</title></book>', '//title');
+----
+Rust
+
+# Nested elements — returns first match
+query I
+SELECT xpath_text('<r><a>first</a><a>second</a></r>', '//a');
+----
+first
+
+# No match returns empty string
+query I
+SELECT xpath_text('<r><b>hello</b></r>', '//a');
+----
+(empty)
+
+# Attribute predicate
+query I
+SELECT xpath_text('<r><item type="x">yes</item><item type="y">no</item></r>', '//item[@type="x"]');
+----
+yes
+
+# Deep path
+query I
+SELECT xpath_text('<a><b><c><d>deep</d></c></b></a>', '//d');
+----
+deep
+
+# Works on table columns
+statement ok
+CREATE TABLE docs AS SELECT * FROM (VALUES
+  ('<patent><title>Widget</title></patent>'),
+  ('<patent><title>Gadget</title></patent>')
+) AS t(xml);
+
+query I
+SELECT xpath_text(xml, '//title') FROM docs ORDER BY 1;
+----
+Gadget
+Widget

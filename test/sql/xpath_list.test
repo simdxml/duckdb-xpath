@@ -1,0 +1,29 @@
+# name: test/sql/xpath_list.test
+# description: test xpath_list scalar function
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Multiple matches as JSON array
+query I
+SELECT xpath_list('<r><a>1</a><a>2</a><a>3</a></r>', '//a');
+----
+["1","2","3"]
+
+# Single match
+query I
+SELECT xpath_list('<r><a>only</a></r>', '//a');
+----
+["only"]
+
+# No matches — empty array
+query I
+SELECT xpath_list('<r><b/></r>', '//a');
+----
+[]
+
+# With text containing quotes
+query I
+SELECT xpath_list('<r><a>say "hello"</a></r>', '//a');
+----
+["say \"hello\""]
