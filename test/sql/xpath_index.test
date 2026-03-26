@@ -1,0 +1,45 @@
+# name: test/sql/xpath_index.test
+# description: test sidecar .sxi index creation and usage
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# Write test XML file
+statement ok
+COPY (SELECT '<patents><patent><title>Alpha</title></patent><patent><title>Beta</title></patent></patents>' AS c) TO '__TEST_DIR__/indexed.xml' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Create index — returns path, tag count, size
+query III
+SELECT
+  sxi_path LIKE '%indexed.sxi',
+  tags > 0,
+  size_bytes > 0
+FROM xpath_create_index('__TEST_DIR__/indexed.xml');
+----
+true	true	true
+
+# Read using index (should be transparent)
+query I
+SELECT * FROM read_xml('__TEST_DIR__/indexed.xml', '//title') ORDER BY 1;
+----
+Alpha
+Beta
+
+# Drop index
+query I
+SELECT * FROM xpath_drop_index('__TEST_DIR__/indexed.xml');
+----
+true
+
+# Drop again — already gone
+query I
+SELECT * FROM xpath_drop_index('__TEST_DIR__/indexed.xml');
+----
+false
+
+# Read still works without index
+query I
+SELECT * FROM read_xml('__TEST_DIR__/indexed.xml', '//title') ORDER BY 1;
+----
+Alpha
+Beta

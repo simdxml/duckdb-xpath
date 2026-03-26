@@ -1,3 +1,4 @@
+mod index;
 mod scalar;
 mod table;
 
@@ -15,6 +16,10 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
 
     // Table functions
     con.register_table_function::<table::ReadXmlVTab>("read_xml")?;
+
+    // Index management
+    con.register_table_function::<index::CreateIndexVTab>("xpath_create_index")?;
+    con.register_table_function::<index::DropIndexVTab>("xpath_drop_index")?;
 
     Ok(())
 }

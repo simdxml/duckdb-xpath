@@ -69,19 +69,40 @@ impl VTab for ReadXmlVTab {
         if !state.initialized {
             state.initialized = true;
 
-            // Read and parse the XML file
-            let data = std::fs::read(&bind_data.file_path)
-                .map_err(|e| format!("Failed to read '{}': {}", bind_data.file_path, e))?;
+            let xml_path = std::path::Path::new(&bind_data.file_path);
+            let sxi_path = xml_path.with_extension("sxi");
 
-            // Use parallel parse for large files
-            let index = if data.len() > 1_048_576 {
-                simdxml::parallel::parse_parallel(&data, num_cpus())?
-            } else {
-                simdxml::parse(&data)?
-            };
+            // Try loading pre-built .sxi index first (instant, skip parsing)
+            if sxi_path.exists() {
+                match simdxml::load_or_parse(xml_path) {
+                    Ok(owned_index) => {
+                        let texts = owned_index.xpath_text(&bind_data.xpath_expr)?;
+                        state.results = texts.into_iter().map(|s| s.to_string()).collect();
+                        // Skip the parse path below
+                        state.offset = 0;
+                        // Return early from init
+                    }
+                    Err(_) => {
+                        // Fall through to parse from scratch
+                    }
+                }
+            }
 
-            let texts = index.xpath_text(&bind_data.xpath_expr)?;
-            state.results = texts.into_iter().map(|s| s.to_string()).collect();
+            if state.results.is_empty() || !sxi_path.exists() {
+                // Read and parse the XML file
+                let data = std::fs::read(&bind_data.file_path)
+                    .map_err(|e| format!("Failed to read '{}': {}", bind_data.file_path, e))?;
+
+                // Use parallel parse for large files
+                let index = if data.len() > 1_048_576 {
+                    simdxml::parallel::parse_parallel(&data, num_cpus())?
+                } else {
+                    simdxml::parse(&data)?
+                };
+
+                let texts = index.xpath_text(&bind_data.xpath_expr)?;
+                state.results = texts.into_iter().map(|s| s.to_string()).collect();
+            }
         }
 
         let remaining = state.results.len() - state.offset;
