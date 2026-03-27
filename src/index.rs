@@ -2,7 +2,6 @@ use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
 };
-use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -81,8 +80,7 @@ impl VTab for CreateIndexVTab {
 
         // Output: sxi_path, tag_count, sxi_size
         let path_vec = output.flat_vector(0);
-        let sxi_path_str = CString::new(sxi_path.to_string_lossy().as_ref())?;
-        path_vec.insert(0, sxi_path_str);
+        path_vec.insert(0, sxi_path.to_string_lossy().as_ref());
 
         let tags_vec = output.flat_vector(1);
         unsafe { *(tags_vec.as_mut_ptr::<i64>()) = tag_count; }

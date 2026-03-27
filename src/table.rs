@@ -2,7 +2,6 @@ use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
 };
-use std::ffi::CString;
 use std::sync::Mutex;
 
 /// read_xml(file VARCHAR, xpath VARCHAR) → (result VARCHAR)
@@ -20,7 +19,11 @@ pub struct ReadXmlBindData {
 }
 
 pub struct ReadXmlState {
-    results: Vec<String>,
+    /// File data kept alive so byte-offset ranges remain valid.
+    data: Vec<u8>,
+    /// Results as byte-offset ranges (start, end) into `data`.
+    /// Avoids materializing all results as owned Strings.
+    result_ranges: Vec<(usize, usize)>,
     offset: usize,
     initialized: bool,
 }
@@ -51,7 +54,8 @@ impl VTab for ReadXmlVTab {
     fn init(_: &InitInfo) -> duckdb::Result<Self::InitData, Box<dyn std::error::Error>> {
         Ok(ReadXmlInitData {
             state: Mutex::new(ReadXmlState {
-                results: Vec::new(),
+                data: Vec::new(),
+                result_ranges: Vec::new(),
                 offset: 0,
                 initialized: false,
             }),
@@ -73,14 +77,24 @@ impl VTab for ReadXmlVTab {
             let sxi_path = xml_path.with_extension("sxi");
 
             // Try loading pre-built .sxi index first (instant, skip parsing)
+            let mut loaded = false;
             if sxi_path.exists() {
                 match simdxml::load_or_parse(xml_path) {
                     Ok(owned_index) => {
                         let texts = owned_index.xpath_text(&bind_data.xpath_expr)?;
-                        state.results = texts.into_iter().map(|s| s.to_string()).collect();
-                        // Skip the parse path below
+                        // With .sxi we can't do byte-offset ranges (different memory layout),
+                        // so collect as owned strings via ranges into a temporary buffer
+                        let mut data = Vec::new();
+                        let mut ranges = Vec::new();
+                        for text in texts {
+                            let start = data.len();
+                            data.extend_from_slice(text.as_bytes());
+                            ranges.push((start, data.len()));
+                        }
+                        state.data = data;
+                        state.result_ranges = ranges;
                         state.offset = 0;
-                        // Return early from init
+                        loaded = true;
                     }
                     Err(_) => {
                         // Fall through to parse from scratch
@@ -88,24 +102,32 @@ impl VTab for ReadXmlVTab {
                 }
             }
 
-            if state.results.is_empty() || !sxi_path.exists() {
+            if !loaded {
                 // Read and parse the XML file
-                let data = std::fs::read(&bind_data.file_path)
+                state.data = std::fs::read(&bind_data.file_path)
                     .map_err(|e| format!("Failed to read '{}': {}", bind_data.file_path, e))?;
 
-                // Use parallel parse for large files
-                let index = if data.len() > 1_048_576 {
-                    simdxml::parallel::parse_parallel(&data, num_cpus())?
+                // Use lazy parsing when possible, parallel for large files
+                let index = if state.data.len() > 1_048_576 {
+                    simdxml::parallel::parse_parallel(&state.data, num_cpus())?
                 } else {
-                    simdxml::parse(&data)?
+                    simdxml::parse_for_xpath(&state.data, &bind_data.xpath_expr)?
                 };
 
                 let texts = index.xpath_text(&bind_data.xpath_expr)?;
-                state.results = texts.into_iter().map(|s| s.to_string()).collect();
+
+                // Store as byte-offset ranges into the original file data
+                state.result_ranges = texts.iter().map(|text| {
+                    let text_ptr = text.as_ptr();
+                    let data_ptr = state.data.as_ptr();
+                    // Safety: xpath_text returns borrowed slices into the input data
+                    let start = unsafe { text_ptr.offset_from(data_ptr) as usize };
+                    (start, start + text.len())
+                }).collect();
             }
         }
 
-        let remaining = state.results.len() - state.offset;
+        let remaining = state.result_ranges.len() - state.offset;
         if remaining == 0 {
             output.set_len(0);
             return Ok(());
@@ -115,9 +137,11 @@ impl VTab for ReadXmlVTab {
         let vector = output.flat_vector(0);
 
         for i in 0..chunk_size {
-            let text = &state.results[state.offset + i];
-            let c_str = CString::new(text.as_str())?;
-            vector.insert(i, c_str);
+            let (start, end) = state.result_ranges[state.offset + i];
+            let bytes = &state.data[start..end];
+            // Safety: text content from valid XML is valid UTF-8
+            let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+            vector.insert(i, text);
         }
 
         output.set_len(chunk_size);
