@@ -1,0 +1,214 @@
+# name: test/sql/xpath_vectorized.test
+# description: test vectorized execution paths (QuickScanner, bloom, ParseScratch)
+# group: [duckdb_xpath]
+
+require duckdb_xpath
+
+# ---------------------------------------------------------------------------
+# QuickScanner grep-mode fast path: simple //tagname
+# ---------------------------------------------------------------------------
+
+# Basic grep-mode extraction across many rows
+statement ok
+CREATE TABLE grep_docs AS
+SELECT
+    CASE WHEN i % 5 = 0
+        THEN '<r><claim>claim ' || i || '</claim></r>'
+        ELSE '<r><other>text ' || i || '</other></r>'
+    END AS xml, i
+FROM generate_series(1, 100) t(i);
+
+# xpath_text with simple //tagname — exercises QuickScanner
+query I
+SELECT count(*) FROM (
+    SELECT xpath_text(xml, '//claim') AS r FROM grep_docs
+) WHERE r != '';
+----
+20
+
+# xpath_exists with simple //tagname — exercises QuickScanner.exists()
+query I
+SELECT count(*) FROM grep_docs WHERE xpath_exists(xml, '//claim');
+----
+20
+
+# xpath_count with simple //tagname — exercises QuickScanner.count()
+query I
+SELECT sum(xpath_count(xml, '//claim')) FROM grep_docs;
+----
+20
+
+# ---------------------------------------------------------------------------
+# QuickScanner fallback on nested elements
+# When <claim> contains child elements, grep-mode can't extract text and
+# must fall through to the full parser. Verify correctness.
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE nested_docs AS SELECT * FROM (VALUES
+    ('<r><claim><b>bold</b> text</claim></r>'),
+    ('<r><claim>simple text</claim></r>'),
+    ('<r><claim><sub>nested <em>deep</em></sub></claim></r>')
+) AS t(xml);
+
+# Nested elements: grep-mode falls back to parser
+# xpath_text returns direct child text only (not text inside nested elements)
+query I
+SELECT xpath_text(xml, '//claim') FROM nested_docs ORDER BY 1;
+----
+(empty)
+ text
+simple text
+
+# ---------------------------------------------------------------------------
+# QuickScanner avoids prefix matches
+# <claimant> should NOT match //claim
+# ---------------------------------------------------------------------------
+
+query I
+SELECT xpath_text('<r><claimant>wrong</claimant><claim>right</claim></r>', '//claim');
+----
+right
+
+query I
+SELECT xpath_exists('<r><claimant>wrong</claimant></r>', '//claim');
+----
+false
+
+query I
+SELECT xpath_count('<r><claimant>x</claimant></r>', '//claim');
+----
+0
+
+# ---------------------------------------------------------------------------
+# Bloom pre-filtering: selective queries skip non-matching documents
+# ---------------------------------------------------------------------------
+
+# xpath_text with predicate — not a simple //tagname, uses bloom+parse path
+statement ok
+CREATE TABLE pred_docs AS
+SELECT
+    CASE WHEN i % 10 = 0
+        THEN '<r><item type="special">special ' || i || '</item></r>'
+        ELSE '<r><other>skip ' || i || '</other></r>'
+    END AS xml, i
+FROM generate_series(1, 100) t(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT xpath_text(xml, '//item[@type="special"]') AS r FROM pred_docs
+) WHERE r != '';
+----
+10
+
+# ---------------------------------------------------------------------------
+# ParseScratch reuse: processing multiple chunks with same expression
+# Large enough table to span multiple DuckDB chunks (>2048 rows)
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE large_docs AS
+SELECT '<patent><title>Patent ' || i || '</title><abstract>Abstract text for patent number ' || i || '</abstract></patent>' AS xml, i
+FROM generate_series(1, 5000) t(i);
+
+# All 5000 rows should return title text — spans multiple chunks
+query I
+SELECT count(*) FROM (
+    SELECT xpath_text(xml, '//title') AS r FROM large_docs
+) WHERE r != '';
+----
+5000
+
+# xpath_count across multiple chunks
+query I
+SELECT sum(xpath_count(xml, '//title')) FROM large_docs;
+----
+5000
+
+# xpath_exists across multiple chunks
+query I
+SELECT count(*) FROM large_docs WHERE xpath_exists(xml, '//title');
+----
+5000
+
+# ---------------------------------------------------------------------------
+# xpath_list with bloom filtering
+# ---------------------------------------------------------------------------
+
+query I
+SELECT xpath_list('<r><a>1</a><a>2</a><a>3</a></r>', '//a');
+----
+["1","2","3"]
+
+query I
+SELECT xpath_list('<r><b>no match</b></r>', '//a');
+----
+[]
+
+# ---------------------------------------------------------------------------
+# xpath_eval with ParseScratch reuse
+# ---------------------------------------------------------------------------
+
+query I
+SELECT xpath_eval('<r><a/><a/><a/></r>', 'count(//a)');
+----
+3
+
+query I
+SELECT count(DISTINCT xpath_eval(xml, 'count(//title)')) FROM large_docs;
+----
+1
+
+# ---------------------------------------------------------------------------
+# Varying expressions per row (fallback path)
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE expr_docs AS SELECT * FROM (VALUES
+    ('<r><a>alpha</a><b>beta</b></r>', '//a'),
+    ('<r><a>alpha</a><b>beta</b></r>', '//b')
+) AS t(xml, expr);
+
+query I
+SELECT xpath_text(xml, expr) FROM expr_docs ORDER BY 1;
+----
+alpha
+beta
+
+# ---------------------------------------------------------------------------
+# Self-closing tags with grep-mode
+# ---------------------------------------------------------------------------
+
+query I
+SELECT xpath_text('<r><item/></r>', '//item');
+----
+(empty)
+
+query I
+SELECT xpath_exists('<r><item/></r>', '//item');
+----
+true
+
+query I
+SELECT xpath_count('<r><item/><item/><item>text</item></r>', '//item');
+----
+3
+
+# ---------------------------------------------------------------------------
+# Empty/minimal documents
+# ---------------------------------------------------------------------------
+
+query I
+SELECT xpath_text('<r/>', '//a');
+----
+(empty)
+
+query I
+SELECT xpath_exists('<r/>', '//a');
+----
+false
+
+query I
+SELECT xpath_count('<r/>', '//a');
+----
+0
