@@ -20,4 +20,4 @@ crate-type = ["staticlib"]
 
 [dependencies]
 duckdb = { version = "=1.10501.0", features = ["loadable-extension", "vscalar"] }
-simdxml = "0.1"
+simdxml = { path = "../simdxml/crates/simdxml" }

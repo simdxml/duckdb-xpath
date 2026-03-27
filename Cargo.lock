@@ -1782,12 +1782,12 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 [[package]]
 name = "simdxml"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a95967b0b043c074c9415eb35a82439407c2fb2735b220efc6b93dfd41c020e7"
 dependencies = [
+ "aho-corasick",
  "memchr",
  "memmap2",
  "nom",
+ "regex",
  "thiserror",
  "xxhash-rust",
 ]
