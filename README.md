@@ -1,116 +1,61 @@
-# DuckDB Rust extension template
-This is an **experimental** template for Rust based extensions based on the C Extension API of DuckDB. The goal is to
-turn this eventually into a stable basis for pure-Rust DuckDB extensions that can be submitted to the Community extensions
-repository
+# duckdb-xpath
 
-Features:
-- No DuckDB build required
-- No C++ or C code required
-- CI/CD chain preconfigured
-- (Coming soon) Works with community extensions
+DuckDB extension for XPath queries on XML columns. Uses [simdxml](https://github.com/simdxml/simdxml) for parsing.
 
-## Cloning
+## Functions
 
-Clone the repo with submodules
-
-```shell
-git clone --recurse-submodules <repo>
-```
-
-## Dependencies
-In principle, these extensions can be compiled with the Rust toolchain alone. However, this template relies on some additional
-tooling to make life a little easier and to be able to share CI/CD infrastructure with extension templates for other languages:
-
-- Python3
-- Python3-venv
-- [Make](https://www.gnu.org/software/make)
-- Git
-
-Installing these dependencies will vary per platform:
-- For Linux, these come generally pre-installed or are available through the distro-specific package manager.
-- For MacOS, [homebrew](https://formulae.brew.sh/).
-- For Windows, [chocolatey](https://community.chocolatey.org/).
-
-## Building
-After installing the dependencies, building is a two-step process. Firstly run:
-```shell
-make configure
-```
-This will ensure a Python venv is set up with DuckDB and DuckDB's test runner installed. Additionally, depending on configuration,
-DuckDB will be used to determine the correct platform for which you are compiling.
-
-Then, to build the extension run:
-```shell
-make debug
-```
-This delegates the build process to cargo, which will produce a shared library in `target/debug/<shared_lib_name>`. After this step,
-a script is run to transform the shared library into a loadable extension by appending a binary footer. The resulting extension is written
-to the `build/debug` directory.
-
-To create optimized release binaries, simply run `make release` instead.
-
-### Running the extension
-To run the extension code, start `duckdb` with `-unsigned` flag. This will allow you to load the local extension file.
-
-```sh
-duckdb -unsigned
-```
-
-After loading the extension by the file path, you can use the functions provided by the extension (in this case, `rusty_quack()`).
+| Function | Return | Description |
+|---|---|---|
+| `xpath_text(xml, xpath)` | `VARCHAR` | Text of first matching node |
+| `xpath_list(xml, xpath)` | `VARCHAR` | JSON array of all matching text |
+| `xpath_count(xml, xpath)` | `BIGINT` | Count of matching nodes |
+| `xpath_exists(xml, xpath)` | `BOOLEAN` | Whether any node matches |
+| `xpath_eval(xml, xpath)` | `VARCHAR` | Scalar XPath expressions (count(), string(), etc.) |
+| `read_xml(file, xpath)` | Table | Each matching text as a row |
+| `xpath_create_index(file)` | Table | Build `.sxi` sidecar index |
+| `xpath_drop_index(file)` | Table | Remove `.sxi` sidecar index |
 
 ```sql
-LOAD './build/debug/extension/rusty_quack/rusty_quack.duckdb_extension';
-SELECT * FROM rusty_quack('Jane');
+SELECT xpath_text(xml, '//invention-title') FROM patents;
+SELECT ucid, xpath_count(xml, '//claim-text') AS n_claims FROM patents;
+SELECT * FROM read_xml('corpus.xml', '//patent/title');
 ```
 
-```
-┌─────────────────────┐
-│       column0       │
-│       varchar       │
-├─────────────────────┤
-│ Rusty Quack Jane 🐥 │
-└─────────────────────┘
-```
+## Benchmark
 
-## Testing
-This extension uses the DuckDB Python client for testing. This should be automatically installed in the `make configure` step.
-The tests themselves are written in the SQLLogicTest format, just like most of DuckDB's tests. A sample test can be found in
-`test/sql/<extension_name>.test`. To run the tests using the *debug* build:
+10K real patent XML documents (1.1 GB, 111 KB avg), release build, compared to [webbed](https://duckdb.org/community_extensions/extensions/webbed) (libxml2):
 
-```shell
-make test_debug
-```
+| Query | duckdb-xpath | webbed | Ratio |
+|---|---|---|---|
+| `//invention-title` text (100% match) | 0.005s | 3.42s | 685x |
+| `xpath_exists //claim-text` (93% match) | 0.025s | 3.71s | 148x |
+| `xpath_count //claim-text` (461K total) | 0.035s | 3.64s | 104x |
+| `xpath_text //claim-text` (93% match) | 0.655s | 3.75s | 5.7x |
 
-or for the *release* build:
-```shell
+Simple `//tagname` queries use a grep-mode fast path (SIMD string search, no XML parsing). Complex queries fall through to structural parsing with buffer reuse across documents.
+
+Corpus files are in `test/benchmark/` (git-lfs).
+
+## Building
+
+```bash
+git clone --recurse-submodules <repo>
+cd duckdb-xpath
+make configure
+make release
 make test_release
 ```
 
-### Version switching
-Testing with different DuckDB versions is really simple:
+Extension output: `build/release/extension/duckdb_xpath/duckdb_xpath.duckdb_extension`
 
-First, run
-```
-make clean_all
-```
-to ensure the previous `make configure` step is deleted.
-
-Then, run
-```
-DUCKDB_TEST_VERSION=v1.3.2 make configure
-```
-to select a different duckdb version to test with
-
-Finally, build and test with
-```
-make debug
-make test_debug
+```sql
+LOAD '/path/to/duckdb_xpath.duckdb_extension';
 ```
 
-### Known issues
-This is a bit of a footgun, but the extensions produced by this template may (or may not) be broken on windows on python3.11
-with the following error on extension load:
-```shell
-IO Error: Extension '<name>.duckdb_extension' could not be loaded: The specified module could not be found
-```
-This was resolved by using python 3.12
+## XPath coverage
+
+XPath 1.0: 327/327 libxml2 conformance, 1015/1023 pugixml conformance. XPath 2.0/3.1 in progress upstream in simdxml.
+
+## License
+
+MIT OR Apache-2.0
